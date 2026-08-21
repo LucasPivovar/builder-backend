@@ -1,6 +1,8 @@
 import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { AuthModule } from '../auth/auth.module';
+import { AuditModule } from '../audit/audit.module';
+import { NotificationsModule } from '../notifications/notifications.module';
 import { UserEntity } from '../auth/user.entity';
 import { WorkspaceEntity } from '../workspace/workspace.entity';
 import { WorkspaceModule } from '../workspace/workspace.module';
@@ -9,7 +11,7 @@ import { AdminGuard } from './admin.guard';
 import { AdminService } from './admin.service';
 
 @Module({
-  imports: [TypeOrmModule.forFeature([UserEntity, WorkspaceEntity]), AuthModule, WorkspaceModule],
+  imports: [TypeOrmModule.forFeature([UserEntity, WorkspaceEntity]), AuthModule, WorkspaceModule, NotificationsModule, AuditModule],
   controllers: [AdminController],
   providers: [AdminService, AdminGuard]
 })

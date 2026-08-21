@@ -1,7 +1,9 @@
-import { Injectable, NotFoundException, OnModuleInit } from '@nestjs/common';
+import { BadRequestException, Injectable, NotFoundException, OnModuleInit } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { UserEntity } from '../auth/user.entity';
+import { AuditService } from '../audit/audit.service';
+import { NotificationsService } from '../notifications/notifications.service';
 import { WorkspaceEntity } from '../workspace/workspace.entity';
 import { WorkspaceService } from '../workspace/workspace.service';
 
@@ -10,7 +12,9 @@ export class AdminService implements OnModuleInit {
   constructor(
     @InjectRepository(UserEntity) private readonly users: Repository<UserEntity>,
     @InjectRepository(WorkspaceEntity) private readonly workspaces: Repository<WorkspaceEntity>,
-    private readonly workspaceService: WorkspaceService
+    private readonly workspaceService: WorkspaceService,
+    private readonly notifications: NotificationsService,
+    private readonly audit: AuditService
   ) {}
 
   async onModuleInit() {
@@ -51,6 +55,37 @@ export class AdminService implements OnModuleInit {
     return users.map(user => this.userSummary(user, workspaces.find(item => item.userId === user.id)));
   }
 
+  async history() {
+    return this.audit.list(160);
+  }
+
+  async createAlert(input: { title?: string; message?: string; type?: string; target?: string; userId?: string }) {
+    const title = String(input.title || '').trim();
+    const message = String(input.message || '').trim();
+    const type = ['success', 'error', 'pending', 'info', 'warning'].includes(String(input.type)) ? String(input.type) : 'info';
+    if (!title || !message) throw new BadRequestException('Título e mensagem são obrigatórios.');
+
+    let targetUsers: UserEntity[] = [];
+    if (input.target === 'user') {
+      if (!input.userId) throw new BadRequestException('Selecione um usuário.');
+      const user = await this.users.findOneBy({ id: input.userId, active: true });
+      if (!user) throw new NotFoundException('Usuário não encontrado.');
+      targetUsers = [user];
+    } else {
+      targetUsers = await this.users.find({ where: { active: true } });
+    }
+
+    await this.notifications.createMany(targetUsers.map(user => user.id), { title, message, type, action: 'projects' });
+    await this.audit.record({
+      userId: input.target === 'user' ? input.userId : null,
+      type,
+      title: 'Alerta emitido',
+      message: input.target === 'user' ? `Alerta enviado para 1 usuário: ${title}` : `Alerta enviado para ${targetUsers.length} usuários: ${title}`,
+      meta: { alertTitle: title, alertMessage: message, target: input.target || 'all' }
+    });
+    return { ok: true, delivered: targetUsers.length };
+  }
+
   async userWorkspace(userId: string) {
     const user = await this.users.findOneBy({ id: userId });
     if (!user) throw new NotFoundException('Usuário não encontrado.');
@@ -75,6 +110,7 @@ export class AdminService implements OnModuleInit {
   async restore(userId: string, backupId: string) {
     const result = await this.workspaceService.restoreBackup(userId, backupId);
     if (!result) throw new NotFoundException('Backup não encontrado.');
+    await this.notifications.create(userId, { title: 'Backup restaurado', message: 'Um administrador restaurou um backup do seu workspace.', type: 'warning', action: 'projects' });
     return result;
   }
 

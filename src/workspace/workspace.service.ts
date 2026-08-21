@@ -1,6 +1,9 @@
 import { ConflictException, Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
+import { AuditService } from '../audit/audit.service';
+import { UserEntity } from '../auth/user.entity';
+import { NotificationsService } from '../notifications/notifications.service';
 import { SaveWorkspaceDto } from './workspace.dto';
 import { WorkspaceBackupEntity, WorkspaceData, WorkspaceEntity } from './workspace.entity';
 
@@ -8,7 +11,10 @@ import { WorkspaceBackupEntity, WorkspaceData, WorkspaceEntity } from './workspa
 export class WorkspaceService {
   constructor(
     @InjectRepository(WorkspaceEntity) private readonly workspaces: Repository<WorkspaceEntity>,
-    @InjectRepository(WorkspaceBackupEntity) private readonly backups: Repository<WorkspaceBackupEntity>
+    @InjectRepository(WorkspaceBackupEntity) private readonly backups: Repository<WorkspaceBackupEntity>,
+    @InjectRepository(UserEntity) private readonly users: Repository<UserEntity>,
+    private readonly audit: AuditService,
+    private readonly notifications: NotificationsService
   ) {}
 
   async get(userId: string) {
@@ -52,6 +58,25 @@ export class WorkspaceService {
     workspace.initialized = true;
     workspace.revision += 1;
     await this.workspaces.save(workspace);
+    const pages = Array.isArray(workspace.data?.pages) ? workspace.data.pages : [];
+    const latestPage = pages
+      .map((page: any) => ({ id: String(page?.id || ''), name: String(page?.name || 'Página'), updatedAt: page?.lastEditedAt || page?.updatedAt || page?.createdAt || '' }))
+      .sort((a, b) => new Date(b.updatedAt || 0).getTime() - new Date(a.updatedAt || 0).getTime())[0];
+    const pageName = latestPage?.name || 'Workspace';
+    await this.notifications.create(userId, {
+      title: 'Página salva',
+      message: `Sua página ${pageName} foi salva com sucesso.`,
+      type: 'success',
+      action: 'projects'
+    });
+    await this.audit.record({
+      userId,
+      type: 'success',
+      title: 'Página salva',
+      message: `A página ${pageName} do usuário ${userId} foi salva.`,
+      pageId: latestPage?.id,
+      pageName
+    });
     return this.response(workspace);
   }
 
@@ -61,6 +86,22 @@ export class WorkspaceService {
 
   async listBackups(userId: string) {
     return this.backups.find({ where: { userId }, order: { createdAt: 'DESC' }, take: 20 });
+  }
+
+  async platformTemplates() {
+    const admins = await this.users.find({ where: { role: 'admin', active: true } });
+    if (!admins.length) return [];
+    const workspaces = await this.workspaces.find();
+    const adminIds = new Set(admins.map(user => user.id));
+    return workspaces
+      .filter(workspace => adminIds.has(workspace.userId))
+      .flatMap(workspace => Array.isArray(workspace.data?.templates) ? workspace.data.templates : [])
+      .map((template: any) => ({
+        ...template,
+        id: template?.id ? `platform-${template.id}` : `platform-${Date.now()}`,
+        sourceTemplateId: template?.id || '',
+        platformTemplate: true
+      }));
   }
 
   async restoreBackup(userId: string, backupId: string) {
@@ -73,6 +114,7 @@ export class WorkspaceService {
     workspace.initialized = true;
     workspace.revision += 1;
     await this.workspaces.save(workspace);
+    await this.audit.record({ userId, type: 'warning', title: 'Backup restaurado', message: `Backup ${backupId} restaurado por administrador.` });
     return this.response(workspace);
   }
 

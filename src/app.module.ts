@@ -8,6 +8,8 @@ import { WorkspaceModule } from './workspace/workspace.module';
 import { AppController } from './app.controller';
 import { AdminModule } from './admin/admin.module';
 import { NotificationsModule } from './notifications/notifications.module';
+import { PublicationModule } from './publications/publication.module';
+import { AnalyticsModule } from './analytics/analytics.module';
 
 @Module({
   imports: [
@@ -22,7 +24,9 @@ import { NotificationsModule } from './notifications/notifications.module';
     AuthModule,
     WorkspaceModule,
     AdminModule,
-    NotificationsModule
+    NotificationsModule,
+    PublicationModule,
+    AnalyticsModule
   ],
   controllers: [AppController],
   providers: [{ provide: APP_GUARD, useClass: ThrottlerGuard }]

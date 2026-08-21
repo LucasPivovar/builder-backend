@@ -14,6 +14,11 @@ export class WorkspaceController {
     return this.workspaceService.get(user.userId);
   }
 
+  @Get('platform-templates')
+  platformTemplates() {
+    return this.workspaceService.platformTemplates();
+  }
+
   @Put()
   save(@CurrentUser() user: AuthenticatedUser, @Body() dto: SaveWorkspaceDto) {
     return this.workspaceService.save(user.userId, dto);

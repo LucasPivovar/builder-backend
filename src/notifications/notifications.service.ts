@@ -1,11 +1,15 @@
 import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
+import { NotificationStateEntity } from './notification-state.entity';
 import { NotificationEntity } from './notification.entity';
 
 @Injectable()
 export class NotificationsService {
-  constructor(@InjectRepository(NotificationEntity) private readonly notifications: Repository<NotificationEntity>) {}
+  constructor(
+    @InjectRepository(NotificationEntity) private readonly notifications: Repository<NotificationEntity>,
+    @InjectRepository(NotificationStateEntity) private readonly states: Repository<NotificationStateEntity>
+  ) {}
 
   async list(userId: string) {
     await this.ensureSystemNotifications(userId);
@@ -47,24 +51,27 @@ export class NotificationsService {
 
   async clear(userId: string) {
     await this.notifications.delete({ userId });
+    await this.states.save(this.states.create({ userId, clearedAt: new Date() }));
     return { unread: 0, items: [] };
   }
 
   private async ensureSystemNotifications(userId: string) {
     const systemItems = [
-      { title: 'Bem-vindo ao Funil Builder', message: 'Crie sua primeira página ou escolha um template para começar.', type: 'welcome', action: 'create' },
-      { title: 'Salvamento protegido', message: 'Seus projetos são sincronizados com o backend local e mantêm histórico de recuperação.', type: 'security', action: 'projects' },
-      { title: 'Publicação no servidor disponível', message: 'Agora você pode publicar páginas em /p/... e abrir a URL publicada direto pelo dashboard.', type: 'success', action: 'projects' },
-      { title: 'Métricas por página adicionadas', message: 'Cada página publicada ganhou dashboard exclusivo com visualizações, cliques, scroll, tempo médio e vídeo.', type: 'update', action: 'projects' },
-      { title: 'Rastreio automático ativado', message: 'O backend injeta o script de rastreio no head das páginas publicadas e atualiza páginas antigas ao subir.', type: 'security', action: 'projects' },
-      { title: 'DNS customizado preparado', message: 'O modal de DNS mostra instruções de CNAME/A e valida quando o domínio aponta para o servidor.', type: 'pending', action: 'projects' },
-      { title: 'Organização por pastas melhorada', message: 'As páginas agora aparecem em colunas por pasta, com ações para abrir, publicar, DNS e métricas.', type: 'update', action: 'projects' },
-      { title: 'Notificações podem ser limpas', message: 'O painel de notificações agora tem botão para limpar todas as mensagens da sua conta.', type: 'info', action: 'projects' }
+      { title: 'Bem-vindo ao Funil Builder', message: 'Crie sua primeira página ou escolha um template para começar.', type: 'welcome', action: 'create', releaseAt: '2026-08-20T00:00:00.000Z' },
+      { title: 'Salvamento protegido', message: 'Seus projetos são sincronizados com o backend local e mantêm histórico de recuperação.', type: 'security', action: 'projects', releaseAt: '2026-08-20T00:00:00.000Z' },
+      { title: 'Publicação no servidor disponível', message: 'Agora você pode publicar páginas em /p/... e abrir a URL publicada direto pelo dashboard.', type: 'success', action: 'projects', releaseAt: '2026-08-21T20:00:00.000Z' },
+      { title: 'Métricas por página adicionadas', message: 'Cada página publicada ganhou dashboard exclusivo com visualizações, cliques, scroll, tempo médio e vídeo.', type: 'update', action: 'projects', releaseAt: '2026-08-21T20:00:00.000Z' },
+      { title: 'Rastreio automático ativado', message: 'O backend injeta o script de rastreio no head das páginas publicadas e atualiza páginas antigas ao subir.', type: 'security', action: 'projects', releaseAt: '2026-08-21T20:00:00.000Z' },
+      { title: 'DNS customizado preparado', message: 'O modal de DNS mostra instruções de CNAME/A e valida quando o domínio aponta para o servidor.', type: 'pending', action: 'projects', releaseAt: '2026-08-21T20:00:00.000Z' },
+      { title: 'Organização por pastas melhorada', message: 'As páginas agora aparecem em colunas por pasta, com ações para abrir, publicar, DNS e métricas.', type: 'update', action: 'projects', releaseAt: '2026-08-21T20:00:00.000Z' },
+      { title: 'Notificações podem ser limpas', message: 'O painel de notificações agora tem botão para limpar todas as mensagens da sua conta.', type: 'info', action: 'projects', releaseAt: '2026-08-21T20:00:00.000Z' }
     ];
+    const state = await this.states.findOne({ where: { userId } });
+    const clearedAt = state?.clearedAt ? new Date(state.clearedAt).getTime() : 0;
     const existing = await this.notifications.find({ where: { userId } });
     const titles = new Set(existing.map(item => item.title));
-    const missing = systemItems.filter(item => !titles.has(item.title));
+    const missing = systemItems.filter(item => new Date(item.releaseAt).getTime() > clearedAt && !titles.has(item.title));
     if (!missing.length) return;
-    await this.notifications.save(missing.map(item => this.notifications.create({ userId, ...item })));
+    await this.notifications.save(missing.map(({ releaseAt, ...item }) => this.notifications.create({ userId, ...item })));
   }
 }

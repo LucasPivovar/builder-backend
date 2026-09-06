@@ -16,7 +16,7 @@ async function bootstrap() {
     if (request.path.startsWith('/api') || request.path.startsWith('/p')) return next();
     if (['127.0.0.1', 'localhost'].includes(request.hostname)) return next();
 
-    const publication = await publicationService.findByDomain(request.hostname);
+    const publication = await publicationService.findByDomain(request.hostname, request.path);
     if (!publication) return next();
 
     const html = await publicationService.readPublishedIndex(publication);
@@ -31,14 +31,20 @@ async function bootstrap() {
   app.use(helmet({ crossOriginResourcePolicy: { policy: 'cross-origin' } }));
   app.use(json({ limit: '5mb', strict: true }));
   app.use(urlencoded({ extended: false, limit: '1mb' }));
-  app.enableCors({
+  app.enableCors((request: Request, done: (error: Error | null, options: any) => void) => done(null, {
     origin(origin: string | undefined, callback: (error: Error | null, allow?: boolean) => void) {
-      if (!origin || frontendOrigins.includes(origin)) callback(null, true);
-      else callback(new Error('Origem não permitida pelo CORS.'));
+      const publicSubmission = ['/api/analytics/popup-submissions', '/api/analytics/events'].includes(request.path) &&
+        (request.method === 'POST' || (request.method === 'OPTIONS' && request.headers['access-control-request-method'] === 'POST'));
+      const isLocalhost = origin ? /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin) : true;
+      if (publicSubmission || !origin || isLocalhost || frontendOrigins.includes(origin)) {
+        callback(null, true);
+      } else {
+        callback(null, false);
+      }
     },
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'Authorization']
-  });
+  }));
   app.useGlobalPipes(new ValidationPipe({
     whitelist: true,
     forbidNonWhitelisted: true,

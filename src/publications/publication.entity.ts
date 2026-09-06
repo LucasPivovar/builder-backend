@@ -2,6 +2,7 @@ import { Column, CreateDateColumn, Entity, PrimaryGeneratedColumn, UpdateDateCol
 
 @Entity('publications')
 export class PublicationEntity {
+  @Column({ type: 'varchar', nullable: true }) folderId?: string | null;
   @PrimaryGeneratedColumn('uuid')
   id: string;
 

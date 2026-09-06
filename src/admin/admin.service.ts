@@ -2,6 +2,7 @@ import { BadRequestException, Injectable, NotFoundException, OnModuleInit } from
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { UserEntity } from '../auth/user.entity';
+import { PublicationEntity } from '../publications/publication.entity';
 import { AuditService } from '../audit/audit.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { WorkspaceEntity } from '../workspace/workspace.entity';
@@ -12,6 +13,7 @@ export class AdminService implements OnModuleInit {
   constructor(
     @InjectRepository(UserEntity) private readonly users: Repository<UserEntity>,
     @InjectRepository(WorkspaceEntity) private readonly workspaces: Repository<WorkspaceEntity>,
+    @InjectRepository(PublicationEntity) private readonly publications: Repository<PublicationEntity>,
     private readonly workspaceService: WorkspaceService,
     private readonly notifications: NotificationsService,
     private readonly audit: AuditService
@@ -47,6 +49,52 @@ export class AdminService implements OnModuleInit {
     };
   }
 
+  async listAllPages() {
+    const [users, workspaces, publications] = await Promise.all([
+      this.users.find(),
+      this.workspaces.find(),
+      this.publications.find()
+    ]);
+    const userMap = new Map<string, UserEntity>(users.map((u: UserEntity) => [u.id, u]));
+    const pubMap = new Map<string, PublicationEntity>();
+    for (const pub of publications) {
+      pubMap.set(`${pub.userId}:${pub.pageId}`, pub);
+    }
+
+    const allPages: any[] = [];
+    for (const ws of workspaces) {
+      const user = userMap.get(ws.userId);
+      const folders = (ws.data?.folders || []) as any[];
+      const folderMap = new Map(folders.map((f: any) => [f.id, f]));
+      const pages = (ws.data?.pages || []) as any[];
+      for (const page of pages) {
+        const folder: any = page.folderId ? folderMap.get(page.folderId) : null;
+        const pub = pubMap.get(`${ws.userId}:${page.id}`);
+        allPages.push({
+          pageId: page.id,
+          pageName: page.name || 'Sem título',
+          pageType: page.type || 'funil',
+          userId: ws.userId,
+          userName: user ? `${user.name} ${user.lastName}`.trim() : 'Usuário desconhecido',
+          userEmail: user?.email || '',
+          folderId: page.folderId || null,
+          folderName: folder?.name || null,
+          folderDomain: folder?.customDomain || null,
+          slug: pub?.slug || page.pageSettings?.publicationSlug || null,
+          published: Boolean(pub),
+          publicUrl: pub?.publicUrl || null,
+          customDomain: pub?.customDomain || folder?.customDomain || null,
+          customDomainUrl: pub?.customDomainUrl || null,
+          domainStatus: pub?.domainStatus || 'none',
+          publishedAt: pub?.publishedAt || null,
+          updatedAt: page.updatedAt || page.lastEditedAt || ws.updatedAt
+        });
+      }
+    }
+    allPages.sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
+    return allPages;
+  }
+
   async listUsers() {
     const [users, workspaces] = await Promise.all([
       this.users.find({ order: { createdAt: 'DESC' } }),
@@ -57,6 +105,17 @@ export class AdminService implements OnModuleInit {
 
   async history() {
     return this.audit.list(160);
+  }
+  async savePage(actorId: string, userId: string, pageId: string, body: { revision: number; page: Record<string, unknown> }) {
+    const workspace = await this.workspaceService.getByUserId(userId);
+    const pages = workspace.data.pages as any[];
+    const index = pages.findIndex(page => page.id === pageId);
+    if (index < 0) throw new NotFoundException('Página não encontrada.');
+    if (!Array.isArray(body.page.rows)) throw new BadRequestException('Página inválida.');
+    pages[index] = { ...pages[index], rows: body.page.rows, pageSettings: body.page.pageSettings, updatedAt: new Date().toISOString(), lastEditedAt: new Date().toISOString() };
+    const result = await this.workspaceService.save(userId, { ...workspace.data, pages, revision: body.revision });
+    await this.audit.record({ userId, pageId, pageName: pages[index].name, type: 'info', title: 'Edição por administrador', message: `Administrador ${actorId} editou a página ${pageId}.`, meta: { actorId } });
+    return result;
   }
 
   async createAlert(input: { title?: string; message?: string; type?: string; target?: string; userId?: string }) {

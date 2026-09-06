@@ -9,6 +9,8 @@ import { dnsCnameTarget, domainVerificationMode, frontendOrigins, publicBaseUrl,
 import { NotificationsService } from '../notifications/notifications.service';
 import { PublishPageDto } from './publication.dto';
 import { PublicationEntity } from './publication.entity';
+import { WorkspaceEntity } from '../workspace/workspace.entity';
+import { UserEntity } from '../auth/user.entity';
 
 type DomainCheck = { status: 'none' | 'pending' | 'active'; error: string | null };
 
@@ -17,16 +19,21 @@ export class PublicationService {
   constructor(
     @InjectRepository(PublicationEntity) private readonly publications: Repository<PublicationEntity>,
     private readonly audit: AuditService,
-    private readonly notifications: NotificationsService
+    private readonly notifications: NotificationsService,
+    @InjectRepository(WorkspaceEntity) private readonly workspaces: Repository<WorkspaceEntity>
   ) {}
 
   async publish(userId: string, dto: PublishPageDto) {
     const pageId = this.cleanSegment(dto.pageId, 'pagina');
-    const slug = this.cleanSegment(dto.slug || dto.pageName, 'pagina');
+    let publication = await this.publications.findOneBy({ userId, pageId });
+    const workspace = await this.workspaces.findOneBy({ userId });
+    const page: any = workspace?.data.pages.find((page: any) => page.id === dto.pageId);
+    const folder: any = workspace?.data.folders.find((folder: any) => folder.id === page?.folderId);
+    const slug = this.cleanSegment(dto.slug || page?.pageSettings?.publicationSlug || publication?.slug || dto.pageName, 'pagina');
     const userPrefix = this.cleanSegment(userId.slice(0, 8), 'user');
-    const siteKey = await this.uniqueSiteKey(`${userPrefix}-${slug}`, userId, pageId);
+    const siteKey = publication?.siteKey || await this.uniqueSiteKey(`${userPrefix}-${slug}`, userId, pageId);
     const targetDirectory = this.resolveSiteDirectory(siteKey);
-    const customDomain = this.normalizeDomain(dto.customDomain || '');
+    const customDomain = this.normalizeDomain(folder?.customDomain || (dto.customDomain === undefined ? publication?.customDomain || '' : dto.customDomain));
 
     if (Buffer.byteLength(dto.html, 'utf8') > publicationLimits.maxHtmlBytes) {
       throw new BadRequestException(`HTML maior que o limite de ${publicationLimits.maxHtmlBytes} bytes.`);
@@ -36,12 +43,12 @@ export class PublicationService {
       throw new BadRequestException('Envie um HTML completo para publicação.');
     }
 
-    let publication = await this.publications.findOneBy({ userId, pageId });
     await this.assertPublicationQuota(userId, Boolean(publication), Boolean(customDomain), publication?.customDomain || null);
     let domainCheck: DomainCheck = this.emptyDomainCheck();
     if (customDomain) {
       this.assertAllowedDomain(customDomain);
-      await this.assertDomainAvailable(customDomain, publication?.id);
+      const assigned = await this.publications.find({ where: { customDomain } });
+      if (assigned.some(item => item.id !== publication?.id && (item.userId !== userId || !folder?.id || item.folderId !== folder.id || item.slug === slug))) throw new ConflictException('Domínio ou slug já está em uso.');
       domainCheck = await this.verifyDomain(customDomain);
     }
     const previousPath = publication?.sitePath;
@@ -58,6 +65,7 @@ export class PublicationService {
       userId,
       pageId,
       pageName: dto.pageName.trim(),
+      folderId: folder?.id || null,
       slug,
       siteKey,
       customDomain,
@@ -66,7 +74,7 @@ export class PublicationService {
       domainLastCheckedAt: customDomain ? new Date() : null,
       domainVerificationError: customDomain ? domainCheck.error : null,
       publicUrl: `${publicBaseUrl}/p/${siteKey}/`,
-      customDomainUrl: customDomain ? `https://${customDomain}/` : null,
+      customDomainUrl: customDomain ? `https://${customDomain}/${folder?.customDomain ? slug + '/' : ''}` : null,
       sitePath: targetDirectory,
       publishedAt: new Date()
     });
@@ -138,10 +146,21 @@ export class PublicationService {
     return this.response(publication);
   }
 
-  async findByDomain(hostname: string) {
+  async findByDomain(hostname: string, pathname = '/') {
     const domain = this.normalizeDomain(hostname);
     if (!domain) return null;
-    return this.publications.findOneBy({ customDomain: domain, domainStatus: 'active' });
+    const publications = await this.publications.find({ where: { customDomain: domain, domainStatus: 'active' } });
+    if (!publications.length) return null;
+    const path = pathname.replace(/^\/+|\/+$/g, '');
+    if (path) {
+      return publications.find(publication => publication.slug === path) || null;
+    }
+    return (
+      publications.find(p => p.slug === '' || p.slug === 'index' || p.slug === 'home') ||
+      publications.find(p => !p.folderId) ||
+      publications[0] ||
+      null
+    );
   }
 
   async readPublishedIndex(publication: PublicationEntity) {
@@ -204,8 +223,12 @@ export class PublicationService {
   }
 
   private withAnalyticsTracking(html: string, pageId: string, pageName: string) {
+    const popupContext = `<script data-popup-context>window.__builderPopupPageId=${JSON.stringify(pageId).replace(/</g, '\\u003c')};</script>`;
+    html = html.replace(/<script data-popup-context>[\s\S]*?<\/script>/g, '');
+    html = html.replace(/<head[^>]*>/i, match => match + popupContext);
     const marker = 'data-builder-analytics="server"';
-    if (html.includes(marker)) return html;
+    html = html.replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, block =>
+      block.includes(marker) || block.includes("var sessionKey = 'ab_session_'") ? '' : block);
 
     const script = `
 <script ${marker}>
@@ -213,11 +236,40 @@ export class PublicationService {
   var pageId = ${JSON.stringify(pageId)};
   var pageName = ${JSON.stringify(pageName)};
   var sessionKey = 'ab_session_' + pageId;
-  var sessionId = sessionStorage.getItem(sessionKey) || (Date.now().toString(36) + Math.random().toString(36).slice(2));
+  var sessionId = Date.now().toString(36) + Math.random().toString(36).slice(2);
+  var viewed = false;
+  try { sessionId = localStorage.getItem(sessionKey) || sessionId; localStorage.setItem(sessionKey, sessionId); viewed = localStorage.getItem('ab_viewed_' + pageId) === '1'; } catch (_) {}
   var startedAt = Date.now();
+  var countingTime = !document.hidden;
+  function flushTime() {
+    var now = Date.now();
+    if (countingTime) {
+      var seconds = Math.floor((now - startedAt) / 1000);
+      if (seconds > 0) send('time_on_page', 'page', seconds);
+    }
+    startedAt = now;
+  }
+  document.addEventListener('visibilitychange', function(){ flushTime(); countingTime = !document.hidden; });
+  window.addEventListener('pagehide', function(){ flushTime(); countingTime = false; });
+  window.addEventListener('pageshow', function(){ startedAt = Date.now(); countingTime = !document.hidden; });
   var maxScroll = 0;
-  sessionStorage.setItem(sessionKey, sessionId);
   function send(type, target, value, meta) {
+    if (document.hidden && type.indexOf('video_') === 0) return;
+    if (type === 'video_progress') {
+      try {
+        var progressKey = 'ab_progress_' + pageId + '_' + target;
+        var previous = Number(localStorage.getItem(progressKey)) || 0;
+        var current = Number(meta && meta.currentTime) || 0;
+        if (current <= previous) return;
+        value = Math.min(Number(value) || 0, current - previous);
+        localStorage.setItem(progressKey, String(current));
+      } catch (_) {}
+    }
+    if (type === 'video_complete') value = 0;
+    var uniqueKey = 'ab_metric_' + pageId + '_' + type + '_' + (target || '');
+    if (['cta_click', 'video_play', 'video_complete', 'form_submit', 'quiz_step', 'quiz_complete', 'quiz_answer'].indexOf(type) !== -1) {
+      try { if (localStorage.getItem(uniqueKey)) return; localStorage.setItem(uniqueKey, '1'); } catch (_) {}
+    }
     var body = JSON.stringify({
       pageId: pageId,
       pageName: pageName,
@@ -234,48 +286,60 @@ export class PublicationService {
         headers: { 'Content-Type': 'application/json' },
         body: body,
         keepalive: true
-      }).catch(function(){});
+      }).then(function(response){ try { if (!response.ok) localStorage.removeItem(uniqueKey); else if (type === 'page_view') localStorage.setItem('ab_viewed_' + pageId, '1'); } catch (_) {} }).catch(function(){ try { localStorage.removeItem(uniqueKey); } catch (_) {} });
     } catch (e) {
       try {
         if (navigator.sendBeacon) navigator.sendBeacon('/api/analytics/events', new Blob([body], { type: 'application/json' }));
       } catch (_) {}
     }
   }
-  send('page_view', 'page', 1);
+  if (!viewed) send('page_view', 'page', 1);
+  document.addEventListener('quiz:step', function(event){ send('quiz_step', 'Etapa ' + (event.detail.index + 1), 1); });
+  document.addEventListener('quiz:answer', function(event){ send('quiz_answer', 'Etapa ' + (event.detail.index + 1), 1, { answer: event.detail.answers.join(', ') }); });
+  document.addEventListener('quiz:complete', function(){ send('quiz_complete', 'quiz', 1); });
   document.addEventListener('click', function(event) {
     var target = event.target.closest && event.target.closest('a, button, [role="button"], .canvas-btn, .canvas-pitch-btn');
-    if (target) send('cta_click', target.innerText || target.getAttribute('href') || target.getAttribute('aria-label') || 'click', 1, { href: target.getAttribute('href') || '' });
+    if (target && !target.closest('vturb-smartplayer, .canvas-vturb-wrapper')) send('cta_click', (target.innerText || target.getAttribute('aria-label') || target.getAttribute('href') || 'Sem texto').trim().slice(0, 220), 1, { href: target.getAttribute('href') || '', buttonId: target.id || '' });
   });
   document.addEventListener('submit', function(event) {
-    send('form_submit', event.target.getAttribute('action') || 'form', 1);
+    if (!event.target.closest('[data-popup-id]')) send('form_submit', event.target.getAttribute('action') || 'form', 1);
   });
   window.addEventListener('scroll', function() {
     var doc = document.documentElement;
     var height = Math.max(1, doc.scrollHeight - window.innerHeight);
     maxScroll = Math.max(maxScroll, Math.round((window.scrollY / height) * 100));
   }, { passive: true });
-  setInterval(function(){ send('time_on_page', 'page', Math.round((Date.now() - startedAt) / 1000)); startedAt = Date.now(); }, 15000);
-  window.addEventListener('beforeunload', function(){ send('scroll_depth', 'page', maxScroll); send('time_on_page', 'page', Math.round((Date.now() - startedAt) / 1000)); });
+  setInterval(flushTime, 15000);
+  window.addEventListener('beforeunload', function(){ send('scroll_depth', 'page', maxScroll); flushTime(); countingTime = false; });
   function bindVideos() {
     document.querySelectorAll('video').forEach(function(video, index) {
+      if (video.closest('vturb-smartplayer, .canvas-vturb-wrapper')) return;
       if (video.dataset.builderAnalyticsBound) return;
       video.dataset.builderAnalyticsBound = '1';
       var target = video.getAttribute('id') || video.getAttribute('src') || ('video-' + (index + 1));
       var last = 0;
-      video.addEventListener('play', function(){ send('video_play', target, Math.round(video.currentTime || 0)); });
+      document.addEventListener('visibilitychange', function(){ last = Math.round(video.currentTime || 0); });
+      var interacted = false, played = false;
+      video.addEventListener('pointerdown', function(){ interacted = true; });
+      video.addEventListener('keydown', function(){ interacted = true; });
+      video.addEventListener('play', function(){ if (interacted && !played) { played = true; send('video_play', target, Math.round(video.currentTime || 0)); } });
       video.addEventListener('timeupdate', function(){
         var now = Math.round(video.currentTime || 0);
+        if (document.hidden) { last = now; return; }
         if (now - last >= 5) { last = now; send('video_progress', target, 5, { currentTime: now, duration: Math.round(video.duration || 0) }); }
       });
       video.addEventListener('ended', function(){ send('video_complete', target, Math.round(video.duration || video.currentTime || 0)); });
     });
     document.querySelectorAll('vturb-smartplayer, .canvas-vturb-wrapper').forEach(function(player, index) {
+      if (player.matches('.canvas-vturb-wrapper') && player.querySelector('vturb-smartplayer')) return;
       if (player.dataset.builderAnalyticsBound) return;
       player.dataset.builderAnalyticsBound = '1';
       var smart = player.matches && player.matches('vturb-smartplayer') ? player : player.querySelector('vturb-smartplayer');
       var target = (smart && smart.getAttribute('id')) || ('vturb-' + (index + 1));
       var played = false;
       var lastProgress = 0;
+      var resetProgress = false;
+      document.addEventListener('visibilitychange', function(){ resetProgress = true; });
       function markPlay(value) {
         if (!played) {
           played = true;
@@ -283,22 +347,15 @@ export class PublicationService {
         }
       }
       player.addEventListener('click', function(){ markPlay(0); });
-      if ('IntersectionObserver' in window) {
-        var observer = new IntersectionObserver(function(entries) {
-          entries.forEach(function(entry) {
-            if (entry.isIntersecting && entry.intersectionRatio >= 0.5) markPlay(0);
-          });
-        }, { threshold: [0.5] });
-        observer.observe(player);
-      }
       setInterval(function() {
         try {
           var instances = window.smartplayer && window.smartplayer.instances ? window.smartplayer.instances : [];
           instances.forEach(function(inst) {
             var video = inst && inst.video;
             if (!video || !(video.currentTime > 0)) return;
-            markPlay(video.currentTime);
+            if (!played) return;
             var now = Math.round(video.currentTime || 0);
+            if (document.hidden || resetProgress) { lastProgress = now; resetProgress = false; return; }
             if (now - lastProgress >= 5) {
               lastProgress = now;
               send('video_progress', target, 5, { provider: 'vturb', currentTime: now, duration: Math.round(video.duration || 0) });

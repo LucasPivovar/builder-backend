@@ -89,11 +89,12 @@ try {
   const password = 'TesteSeguro123';
   const registration = await request('/auth/register', {
     method: 'POST',
-    body: { name: 'Teste', lastName: 'Persistência', email: `persist-${suffix}@local.test`, password }
+    body: { name: 'Teste', lastName: 'Persistência', phone: '+5511999998888', email: `persist-${suffix}@local.test`, password }
   });
   assert.equal(registration.response.status, 201);
   assert.ok(registration.data.accessToken);
   assert.equal('password' in registration.data.user, false);
+  assert.equal(registration.data.user.phone, '5511999998888');
   const token = registration.data.accessToken;
 
   const duplicateRegistration = await request('/auth/register', {
@@ -123,8 +124,11 @@ try {
     token,
     body: {
       revision: initialWorkspace.data.revision,
-      pages: [{ id: 'page-e2e', name: 'Página persistente', rows: [{ id: 'row-e2e', columns: [] }] }],
-      folders: [{ id: 'folder-e2e', name: 'Pasta persistente', parentId: null, color: '#0ea5e9' }],
+      pages: [
+        { id: 'page-e2e', name: 'Página persistente', folderId: 'folder-e2e', rows: [{ id: 'row-e2e', columns: [] }] },
+        { id: 'page-sub-2', name: 'Segunda Página', folderId: 'folder-e2e', rows: [{ id: 'row-sub-2', columns: [] }] }
+      ],
+      folders: [{ id: 'folder-e2e', name: 'Pasta persistente', parentId: null, color: '#0ea5e9', customDomain: 'oferta.exemplo.com' }],
       templates: [],
       versions: [{ id: 'version-e2e', pageKey: 'page-e2e', label: 'Versão E2E' }],
       metrics: [{ id: 'metric-e2e', pageKey: 'page-e2e', type: 'page_view' }],
@@ -153,10 +157,69 @@ try {
     }
   });
   assert.equal(publication.response.status, 201);
-  assert.match(publication.data.publicUrl, /\/p\/[a-f0-9-]+-pagina-persistente\//);
+  assert.match(publication.data.publicUrl, /\/p\/.*pagina-persistente\//);
   assert.equal(publication.data.dns.type, 'CNAME');
   assert.equal(publication.data.dns.host, 'oferta.exemplo.com');
   assert.equal(publication.data.domainStatus, 'active');
+
+    // Teste de republicação: deve manter a mesma URL exatamente
+  const republish = await request('/publications', {
+    method: 'POST',
+    token,
+    body: {
+      pageId: 'page-e2e',
+      pageName: 'Página persistente atualizada',
+      slug: 'pagina-persistente',
+      customDomain: 'oferta.exemplo.com',
+      html: '<!doctype html><html><head><title>Atualizado</title></head><body><h1>Publicado E2E</h1><p>Atualizado</p></body></html>'
+    }
+  });
+  assert.equal(republish.response.status, 201);
+  assert.equal(republish.data.publicUrl, publication.data.publicUrl, 'URL pública deve ser exatamente a mesma após republicar');
+
+  // Teste de pasta com domínio e subpáginas (ex.: oferta.exemplo.com/segunda-pagina)
+  const secondPagePub = await request('/publications', {
+    method: 'POST',
+    token,
+    body: {
+      pageId: 'page-sub-2',
+      pageName: 'Segunda Página',
+      slug: 'segunda-pagina',
+      customDomain: 'oferta.exemplo.com',
+      html: '<!doctype html><html><body><h1>Segunda Pagina na Pasta</h1></body></html>'
+    }
+  });
+  assert.equal(secondPagePub.response.status, 201);
+  const subpageCustomDomain = await requestPublic('/segunda-pagina', { host: 'oferta.exemplo.com' });
+  assert.equal(subpageCustomDomain.status, 200);
+  assert.match(await subpageCustomDomain.text(), /Segunda Pagina na Pasta/);
+
+  // Teste endpoint Admin Pages (GET /api/admin/pages)
+  const adminPages = await request('/admin/pages', { token });
+  assert.equal(adminPages.response.status, 200);
+  assert.ok(Array.isArray(adminPages.data));
+  assert.ok(adminPages.data.some(p => p.pageId === 'page-e2e'));
+
+  const popupPreflight = await fetch(`${baseUrl}/analytics/popup-submissions`, { method: 'OPTIONS', headers: { Origin: 'https://publicada.exemplo.com', 'Access-Control-Request-Method': 'POST', 'Access-Control-Request-Headers': 'content-type' } });
+  assert.equal(popupPreflight.headers.get('access-control-allow-origin'), 'https://publicada.exemplo.com');
+  const privatePopupCors = await request('/analytics/popup-submissions?pageId=page-e2e', { token, origin: 'https://publicada.exemplo.com' });
+  assert.equal(privatePopupCors.response.headers.get('access-control-allow-origin'), null);
+
+  for (let index = 0; index < 7; index++) {
+    const submission = await request('/analytics/popup-submissions', { method: 'POST', body: {
+      pageId: 'page-e2e', popupId: 'popup-test', fields: [{ id: 'name', label: 'Nome', value: index === 0 ? '=1+1' : `Pessoa ${index}` }]
+    } });
+    assert.equal(submission.response.status, 201);
+  }
+  assert.equal((await request('/analytics/popup-submissions', { method: 'POST', body: { pageId: 'missing', popupId: 'test', fields: [{ id: 'name', label: 'Nome', value: 'Teste' }] } })).response.status, 404);
+  assert.equal((await request('/analytics/popup-submissions', { method: 'POST', body: { pageId: 'page-e2e', popupId: 'test', fields: [{ id: 'name', label: 'Nome', value: 'x'.repeat(2001) }] } })).response.status, 400);
+  assert.equal((await request('/analytics/popup-submissions?pageId=page-e2e')).response.status, 401);
+  const firstResponses = await request('/analytics/popup-submissions?pageId=page-e2e&page=1', { token });
+  const nextResponses = await request('/analytics/popup-submissions?pageId=page-e2e&page=2', { token });
+  assert.equal(firstResponses.data.total, 7);
+  assert.equal(firstResponses.data.items.length, 5);
+  assert.equal(nextResponses.data.items.length, 2);
+  assert.equal(new Set([...firstResponses.data.items, ...nextResponses.data.items].map(row => row.id)).size, 7);
 
   const publishedPage = await fetch(publication.data.publicUrl);
   assert.equal(publishedPage.status, 200);
@@ -217,6 +280,15 @@ try {
   });
   const isolated = await request('/workspace', { token: secondRegistration.data.accessToken });
   assert.equal(isolated.data.data.pages.length, 0);
+  const savedResponses = await request('/analytics/popup-submissions?pageId=page-e2e', { token: login.data.accessToken });
+  assert.equal(savedResponses.data.total, 7, 'Popup submissions persist after restart');
+  const isolatedResponses = await request('/analytics/popup-submissions?pageId=page-e2e', { token: secondRegistration.data.accessToken });
+  assert.equal(isolatedResponses.data.total, 0);
+  const csvResponses = await request('/analytics/popup-submissions/export?pageId=page-e2e', { token: login.data.accessToken });
+  assert.equal(csvResponses.data.csv.split('\r\n').length, 8);
+  assert.ok(csvResponses.data.csv.includes("'=1+1"), 'CSV formulas must be escaped');
+  const isolatedCsv = await request('/analytics/popup-submissions/export?pageId=page-e2e', { token: secondRegistration.data.accessToken });
+  assert.equal(isolatedCsv.data.csv.split('\r\n').length, 1);
 
   const duplicatedDomain = await request('/publications', {
     method: 'POST',

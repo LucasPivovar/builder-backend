@@ -14,6 +14,14 @@ export class LoginDto {
   remember?: boolean;
 }
 
+export class UpdateProfileDto {
+  @IsString() @Length(2, 120) name: string;
+  @IsString() @Matches(/^\+?[\d\s()-]{0,20}$/) phone: string;
+  @IsOptional() @IsEmail() @MaxLength(255) email?: string;
+  @IsOptional() @IsString() @MaxLength(72) currentPassword?: string;
+  @IsOptional() @IsString() @Matches(/^(?=.*[a-z])(?=.*[A-Z])(?=.*\d).{8,72}$/) newPassword?: string;
+}
+
 export class RegisterDto {
   @IsString()
   @Length(2, 120)
@@ -23,6 +31,10 @@ export class RegisterDto {
   @IsString()
   @MaxLength(120)
   lastName?: string;
+
+  @IsOptional()
+  @IsString()
+  phone?: string;
 
   @IsEmail()
   @MaxLength(255)

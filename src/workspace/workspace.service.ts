@@ -1,4 +1,4 @@
-import { ConflictException, Injectable } from '@nestjs/common';
+import { ConflictException, Injectable, OnModuleInit } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { AuditService } from '../audit/audit.service';
@@ -6,9 +6,14 @@ import { UserEntity } from '../auth/user.entity';
 import { NotificationsService } from '../notifications/notifications.service';
 import { SaveWorkspaceDto } from './workspace.dto';
 import { WorkspaceBackupEntity, WorkspaceData, WorkspaceEntity } from './workspace.entity';
+import { mkdir, writeFile } from 'fs/promises';
+import { join } from 'path';
+import { createHash } from 'crypto';
+import { dataDirectory } from '../config/local-config';
+import { encryptPrivateData } from '../config/private-data';
 
 @Injectable()
-export class WorkspaceService {
+export class WorkspaceService implements OnModuleInit {
   constructor(
     @InjectRepository(WorkspaceEntity) private readonly workspaces: Repository<WorkspaceEntity>,
     @InjectRepository(WorkspaceBackupEntity) private readonly backups: Repository<WorkspaceBackupEntity>,
@@ -16,6 +21,14 @@ export class WorkspaceService {
     private readonly audit: AuditService,
     private readonly notifications: NotificationsService
   ) {}
+
+  async onModuleInit() {
+    // Regrava também os registros legados através do transformador criptografado.
+    const workspaces = await this.workspaces.find();
+    const backups = await this.backups.find();
+    for (const workspace of workspaces) await this.workspaces.update(workspace.id, { data: workspace.data as any });
+    for (const backup of backups) await this.backups.update(backup.id, { data: backup.data as any });
+  }
 
   async get(userId: string) {
     let workspace = await this.workspaces.findOneBy({ userId });
@@ -26,6 +39,13 @@ export class WorkspaceService {
         initialized: false,
         revision: 0
       });
+      await this.workspaces.save(workspace);
+    }
+    if (workspace.data.folders.some((folder: any) => folder.id === 'folder-default' && folder.name === 'Funil Principal')) {
+      workspace.data.folders = workspace.data.folders.filter((folder: any) => folder.id !== 'folder-default');
+      workspace.data.pages.forEach((page: any) => { if (page.folderId === 'folder-default') page.folderId = null; });
+      workspace.data.folders.forEach((folder: any) => { if (folder.parentId === 'folder-default') folder.parentId = null; });
+      workspace.revision += 1;
       await this.workspaces.save(workspace);
     }
     return this.response(workspace);
@@ -58,6 +78,12 @@ export class WorkspaceService {
     workspace.initialized = true;
     workspace.revision += 1;
     await this.workspaces.save(workspace);
+    const opaque = (value: string) => createHash('sha256').update(value).digest('hex');
+    for (const page of workspace.data.pages as any[]) {
+      const directory = join(dataDirectory, 'private-projects', opaque(userId), ...(page.folderId ? [opaque(String(page.folderId))] : []));
+      await mkdir(directory, { recursive: true });
+      await writeFile(join(directory, opaque(String(page.id)) + '.enc'), encryptPrivateData(page), { mode: 0o600 });
+    }
     const pages = Array.isArray(workspace.data?.pages) ? workspace.data.pages : [];
     const latestPage = pages
       .map((page: any) => ({ id: String(page?.id || ''), name: String(page?.name || 'Página'), updatedAt: page?.lastEditedAt || page?.updatedAt || page?.createdAt || '' }))
@@ -132,13 +158,7 @@ export class WorkspaceService {
   private defaultData(): WorkspaceData {
     return {
       pages: [],
-      folders: [{
-        id: 'folder-default',
-        name: 'Funil Principal',
-        parentId: null,
-        color: '#0ea5e9',
-        createdAt: new Date().toISOString()
-      }],
+      folders: [],
       templates: [],
       versions: [],
       metrics: [],

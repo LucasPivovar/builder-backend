@@ -33,7 +33,7 @@ export const publicationLimits = {
   maxPublicationsPerUser: Number(process.env.MAX_PUBLICATIONS_PER_USER || 200),
   maxCustomDomainsPerUser: Number(process.env.MAX_CUSTOM_DOMAINS_PER_USER || 50)
 };
-export const frontendOrigins = (process.env.FRONTEND_ORIGINS || 'http://localhost:8080,http://127.0.0.1:8080,http://localhost:8081,http://127.0.0.1:8081')
+export const frontendOrigins = (process.env.FRONTEND_ORIGINS || 'http://localhost:8080,http://127.0.0.1:8080,http://localhost:8081,http://127.0.0.1:8081,http://localhost:8082,http://127.0.0.1:8082')
   .split(',')
   .map((origin) => origin.trim())
   .filter(Boolean);

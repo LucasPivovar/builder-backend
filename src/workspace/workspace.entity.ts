@@ -1,4 +1,5 @@
 import { Column, CreateDateColumn, Entity, PrimaryGeneratedColumn, UpdateDateColumn } from 'typeorm';
+import { privateDataTransformer } from '../config/private-data';
 
 export interface WorkspaceData {
   pages: unknown[];
@@ -17,7 +18,7 @@ export class WorkspaceEntity {
   @Column({ type: 'varchar', length: 36, unique: true })
   userId: string;
 
-  @Column({ type: 'simple-json' })
+  @Column({ type: 'text', transformer: privateDataTransformer })
   data: WorkspaceData;
 
   @Column({ type: 'integer', default: 0 })
@@ -41,7 +42,7 @@ export class WorkspaceBackupEntity {
   @Column({ type: 'varchar', length: 36 })
   userId: string;
 
-  @Column({ type: 'simple-json' })
+  @Column({ type: 'text', transformer: privateDataTransformer })
   data: WorkspaceData;
 
   @Column({ type: 'integer', default: 0 })

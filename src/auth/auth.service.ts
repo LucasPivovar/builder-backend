@@ -1,9 +1,9 @@
-import { ConflictException, Injectable, UnauthorizedException } from '@nestjs/common';
+import { BadRequestException, ConflictException, Injectable, UnauthorizedException } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { InjectRepository } from '@nestjs/typeorm';
 import { compare, hash } from 'bcryptjs';
 import { Repository } from 'typeorm';
-import { LoginDto, RegisterDto } from './auth.dto';
+import { LoginDto, RegisterDto, UpdateProfileDto } from './auth.dto';
 import { UserEntity } from './user.entity';
 
 @Injectable()
@@ -22,9 +22,10 @@ export class AuthService {
     const user = this.users.create({
       name: dto.name.trim(),
       lastName: dto.lastName?.trim() || '',
+      phone: dto.phone ? dto.phone.replace(/\D/g, '') : '',
       email,
       passwordHash: await hash(dto.password, 12),
-      role: await this.users.count() === 0 ? 'admin' : 'user',
+      role: (await this.users.count()) === 0 ? 'admin' : 'user',
       active: true
     });
     await this.users.save(user);
@@ -51,6 +52,21 @@ export class AuthService {
     return this.publicUser(user);
   }
 
+  async updateProfile(userId: string, dto: UpdateProfileDto) {
+    const user = await this.users.createQueryBuilder('user').addSelect('user.passwordHash').where('user.id = :id', { id: userId }).getOne();
+    if (!user || !user.active) throw new UnauthorizedException();
+    const email = dto.email?.trim().toLowerCase() || user.email;
+    if (email !== user.email || dto.newPassword) {
+      if (!dto.currentPassword || !(await compare(dto.currentPassword, user.passwordHash))) throw new BadRequestException('Informe sua senha atual corretamente.');
+      const existing = await this.users.findOneBy({ email });
+      if (existing && existing.id !== userId) throw new ConflictException('Este e-mail já está cadastrado.');
+    }
+    user.name = dto.name.trim(); user.lastName = ''; user.phone = dto.phone.replace(/\D/g, ''); user.email = email;
+    if (dto.newPassword) user.passwordHash = await hash(dto.newPassword, 12);
+    await this.users.save(user);
+    return this.publicUser(user);
+  }
+
   private async createSession(user: UserEntity, remember = false) {
     const accessToken = await this.jwtService.signAsync(
       { sub: user.id, email: user.email },
@@ -66,6 +82,7 @@ export class AuthService {
       firstName: user.name,
       lastName: user.lastName,
       email: user.email,
+      phone: user.phone,
       role: user.role,
       active: user.active,
       createdAt: user.createdAt

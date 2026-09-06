@@ -2,6 +2,7 @@ import { Column, CreateDateColumn, Entity, PrimaryGeneratedColumn, UpdateDateCol
 
 @Entity('users')
 export class UserEntity {
+  @Column({ type: 'varchar', length: 20, default: '' }) phone: string;
   @PrimaryGeneratedColumn('uuid')
   id: string;
 

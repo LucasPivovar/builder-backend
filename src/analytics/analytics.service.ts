@@ -4,12 +4,14 @@ import { Request } from 'express';
 import { Repository } from 'typeorm';
 import { TrackEventDto } from './analytics.dto';
 import { AnalyticsEventEntity } from './analytics-event.entity';
+import { PopupSubmissionEntity } from './popup-submission.entity';
 
-const allowedTypes = new Set(['page_view', 'cta_click', 'form_submit', 'scroll_depth', 'time_on_page', 'video_play', 'video_progress', 'video_complete', 'quiz_answer']);
+const allowedTypes = new Set(['page_view', 'cta_click', 'form_submit', 'scroll_depth', 'time_on_page', 'video_play', 'video_progress', 'video_complete', 'quiz_answer', 'quiz_step', 'quiz_complete', 'email_click']);
 
 @Injectable()
 export class AnalyticsService {
-  constructor(@InjectRepository(AnalyticsEventEntity) private readonly events: Repository<AnalyticsEventEntity>) {}
+  constructor(@InjectRepository(AnalyticsEventEntity) private readonly events: Repository<AnalyticsEventEntity>,
+    @InjectRepository(PopupSubmissionEntity) private readonly submissions: Repository<PopupSubmissionEntity>) {}
 
   async track(dto: TrackEventDto, request: Request) {
     const type = allowedTypes.has(dto.type) ? dto.type : 'info';
@@ -32,10 +34,14 @@ export class AnalyticsService {
   async summary(pageIds: string[] = []) {
     const rows = await this.events.find({ order: { createdAt: 'DESC' }, take: 20000 });
     const allowedPageIds = new Set(pageIds.filter(Boolean));
-    const scoped = allowedPageIds.size ? rows.filter(row => allowedPageIds.has(row.pageId)) : rows;
+    const scoped = rows.filter(row => allowedPageIds.has(row.pageId));
     const byPage = new Map<string, any>();
     const videos = new Map<string, any>();
     const sessions = new Set<string>();
+    const views = new Set<string>();
+    const buttons = new Map<string, any>();
+    const quizSteps = new Map<string, any>();
+    const quizAnswers = new Map<string, any>();
 
     for (const event of scoped) {
       const page = byPage.get(event.pageId) || {
@@ -54,8 +60,29 @@ export class AnalyticsService {
         page.sessions.add(event.sessionId);
         sessions.add(event.sessionId);
       }
-      if (event.type === 'page_view') page.views += 1;
-      if (event.type === 'cta_click') page.clicks += 1;
+      if (event.type === 'page_view') {
+        const key = event.pageId + ':' + (event.sessionId || event.id);
+        if (!views.has(key)) { page.views += 1; views.add(key); }
+      }
+      if (event.type === 'quiz_step') {
+        const key = event.pageId + ':' + event.target;
+        const step = quizSteps.get(key) || { pageId: event.pageId, label: event.target, visitors: new Set() };
+        step.visitors.add(event.sessionId || event.id); quizSteps.set(key, step);
+        if (event.target === 'Etapa 1') page.quizStarts = (page.quizStarts || 0) + 1;
+      }
+      if (event.type === 'quiz_answer') {
+        const key = JSON.stringify([event.pageId, event.target, event.meta?.answer]);
+        const answer = quizAnswers.get(key) || { pageId: event.pageId, question: event.target, answer: String(event.meta?.answer || ''), count: 0 };
+        answer.count += 1; quizAnswers.set(key, answer);
+      }
+      if (event.type === 'quiz_complete') page.quizCompletions = (page.quizCompletions || 0) + 1;
+      if (event.type === 'cta_click' || event.type === 'email_click') {
+        const key = JSON.stringify([event.pageId, event.target, event.meta?.buttonId || '', event.meta?.href || '']);
+        const button = buttons.get(key) || { pageId: event.pageId, label: event.target || 'Sem texto', target: event.meta?.href || '', clicks: 0 };
+        button.clicks += 1;
+        buttons.set(key, button);
+      }
+      if (event.type === 'cta_click' || event.type === 'email_click') page.clicks += 1;
       if (event.type === 'form_submit') page.forms += 1;
       if (event.type === 'scroll_depth') page.maxScroll = Math.max(page.maxScroll, event.value);
       if (event.type === 'time_on_page') page.timeSeconds += event.value;
@@ -74,6 +101,13 @@ export class AnalyticsService {
       }
     }
 
+    const submissions = await this.submissions.find();
+    for (const submission of submissions) {
+      if (!allowedPageIds.has(submission.pageId)) continue;
+      const page = byPage.get(submission.pageId) || { pageId: submission.pageId, views: 0, clicks: 0, forms: 0, maxScroll: 0, timeSeconds: 0, videoPlays: 0, videoSeconds: 0, sessions: new Set<string>() };
+      page.forms += 1;
+      byPage.set(submission.pageId, page);
+    }
     const pages = [...byPage.values()].map(page => ({
       ...page,
       sessions: page.sessions.size,
@@ -93,6 +127,9 @@ export class AnalyticsService {
         avgTimeSeconds: pages.length ? Math.round(pages.reduce((sum, page) => sum + page.avgTimeSeconds, 0) / pages.length) : 0
       },
       pages,
+      buttons: [...buttons.values()],
+      quizSteps: [...quizSteps.values()].map(step => ({ ...step, visitors: step.visitors.size })),
+      quizAnswers: [...quizAnswers.values()],
       videos: videoDashboards
     };
   }

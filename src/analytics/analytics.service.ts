@@ -1,19 +1,28 @@
-import { Injectable } from '@nestjs/common';
+import { BadRequestException, Injectable, NotFoundException, OnModuleInit } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Request } from 'express';
-import { Repository } from 'typeorm';
+import { LessThan, Repository } from 'typeorm';
 import { TrackEventDto } from './analytics.dto';
 import { AnalyticsEventEntity } from './analytics-event.entity';
 import { PopupSubmissionEntity } from './popup-submission.entity';
+import { PublicationEntity } from '../publications/publication.entity';
+import { validAnalyticsSignature } from '../config/analytics-signature';
 
 const allowedTypes = new Set(['page_view', 'cta_click', 'form_submit', 'scroll_depth', 'time_on_page', 'video_play', 'video_progress', 'video_complete', 'quiz_answer', 'quiz_step', 'quiz_complete', 'email_click']);
 
 @Injectable()
-export class AnalyticsService {
+export class AnalyticsService implements OnModuleInit {
   constructor(@InjectRepository(AnalyticsEventEntity) private readonly events: Repository<AnalyticsEventEntity>,
-    @InjectRepository(PopupSubmissionEntity) private readonly submissions: Repository<PopupSubmissionEntity>) {}
+    @InjectRepository(PopupSubmissionEntity) private readonly submissions: Repository<PopupSubmissionEntity>,
+    @InjectRepository(PublicationEntity) private readonly publications: Repository<PublicationEntity>) {}
 
-  async track(dto: TrackEventDto, request: Request) {
+  async onModuleInit(){await this.applyRetention();const timer=setInterval(()=>this.applyRetention().catch(()=>undefined),24*60*60_000);timer.unref();}
+
+  async track(dto: TrackEventDto, request: Request, trusted = false) {
+    if (!trusted) {
+      if (!await this.publications.exists({ where: { pageId: dto.pageId } })) throw new NotFoundException('Página não publicada.');
+      if (!validAnalyticsSignature(dto.pageId,dto.signature)) throw new BadRequestException('Assinatura de analytics inválida.');
+    }
     const type = allowedTypes.has(dto.type) ? dto.type : 'info';
     const row = this.events.create({
       userId: null,
@@ -31,10 +40,12 @@ export class AnalyticsService {
     return { ok: true };
   }
 
-  async summary(pageIds: string[] = []) {
+  async summary(pageIds: string[] = [], range: { from?: Date; to?: Date } = {}) {
     const rows = await this.events.find({ order: { createdAt: 'DESC' }, take: 20000 });
     const allowedPageIds = new Set(pageIds.filter(Boolean));
-    const scoped = rows.filter(row => allowedPageIds.has(row.pageId));
+    const scoped = rows.filter(row => allowedPageIds.has(row.pageId)
+      && (!range.from || row.createdAt >= range.from)
+      && (!range.to || row.createdAt <= range.to));
     const byPage = new Map<string, any>();
     const videos = new Map<string, any>();
     const sessions = new Set<string>();
@@ -104,6 +115,8 @@ export class AnalyticsService {
     const submissions = await this.submissions.find();
     for (const submission of submissions) {
       if (!allowedPageIds.has(submission.pageId)) continue;
+      if (range.from && submission.createdAt < range.from) continue;
+      if (range.to && submission.createdAt > range.to) continue;
       const page = byPage.get(submission.pageId) || { pageId: submission.pageId, views: 0, clicks: 0, forms: 0, maxScroll: 0, timeSeconds: 0, videoPlays: 0, videoSeconds: 0, sessions: new Set<string>() };
       page.forms += 1;
       byPage.set(submission.pageId, page);
@@ -137,4 +150,6 @@ export class AnalyticsService {
   private clean(value: string, max: number) {
     return String(value || '').replace(/[<>]/g, '').slice(0, max);
   }
+
+  private async applyRetention(){const eventDays=Math.max(1,Number(process.env.ANALYTICS_RETENTION_DAYS||365));const leadDays=Math.max(1,Number(process.env.LEAD_RETENTION_DAYS||730));await Promise.all([this.events.delete({createdAt:LessThan(new Date(Date.now()-eventDays*86400000))}),this.submissions.delete({createdAt:LessThan(new Date(Date.now()-leadDays*86400000))})]);}
 }

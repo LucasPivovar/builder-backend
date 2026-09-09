@@ -11,6 +11,9 @@ import { PublishPageDto } from './publication.dto';
 import { PublicationEntity } from './publication.entity';
 import { WorkspaceEntity } from '../workspace/workspace.entity';
 import { UserEntity } from '../auth/user.entity';
+import { BillingService } from '../billing/billing.service';
+import { analyticsSignature } from '../config/analytics-signature';
+import { DomainProvisionerService } from './domain-provisioner.service';
 
 type DomainCheck = { status: 'none' | 'pending' | 'active'; error: string | null };
 
@@ -20,7 +23,9 @@ export class PublicationService {
     @InjectRepository(PublicationEntity) private readonly publications: Repository<PublicationEntity>,
     private readonly audit: AuditService,
     private readonly notifications: NotificationsService,
-    @InjectRepository(WorkspaceEntity) private readonly workspaces: Repository<WorkspaceEntity>
+    @InjectRepository(WorkspaceEntity) private readonly workspaces: Repository<WorkspaceEntity>,
+    private readonly billing: BillingService,
+    private readonly domainProvisioner: DomainProvisionerService
   ) {}
 
   async publish(userId: string, dto: PublishPageDto) {
@@ -33,7 +38,7 @@ export class PublicationService {
     const userPrefix = this.cleanSegment(userId.slice(0, 8), 'user');
     const siteKey = publication?.siteKey || await this.uniqueSiteKey(`${userPrefix}-${slug}`, userId, pageId);
     const targetDirectory = this.resolveSiteDirectory(siteKey);
-    const customDomain = this.normalizeDomain(folder?.customDomain || (dto.customDomain === undefined ? publication?.customDomain || '' : dto.customDomain));
+    const customDomain = this.normalizeDomain(folder?.customDomain || '');
 
     if (Buffer.byteLength(dto.html, 'utf8') > publicationLimits.maxHtmlBytes) {
       throw new BadRequestException(`HTML maior que o limite de ${publicationLimits.maxHtmlBytes} bytes.`);
@@ -43,7 +48,7 @@ export class PublicationService {
       throw new BadRequestException('Envie um HTML completo para publicação.');
     }
 
-    await this.assertPublicationQuota(userId, Boolean(publication), Boolean(customDomain), publication?.customDomain || null);
+    await this.assertPublicationQuota(userId, Boolean(publication), customDomain, publication?.customDomain || null);
     let domainCheck: DomainCheck = this.emptyDomainCheck();
     if (customDomain) {
       this.assertAllowedDomain(customDomain);
@@ -74,11 +79,14 @@ export class PublicationService {
       domainLastCheckedAt: customDomain ? new Date() : null,
       domainVerificationError: customDomain ? domainCheck.error : null,
       publicUrl: `${publicBaseUrl}/p/${siteKey}/`,
-      customDomainUrl: customDomain ? `https://${customDomain}/${folder?.customDomain ? slug + '/' : ''}` : null,
+      customDomainUrl: customDomain ? `https://${customDomain}/${slug}/` : null,
       sitePath: targetDirectory,
       publishedAt: new Date()
     });
     await this.publications.save(publication);
+    if (publication.customDomain && publication.domainStatus === 'active') {
+      await this.domainProvisioner.provision(publication.customDomain);
+    }
     await this.notifications.create(userId, {
       title: customDomain && publication.domainStatus !== 'active' ? 'Publicação pendente' : 'Página publicada',
       message: customDomain && publication.domainStatus !== 'active'
@@ -119,6 +127,10 @@ export class PublicationService {
     const publication = await this.publications.findOneBy({ id, userId });
     if (!publication) throw new NotFoundException('Publicação não encontrada.');
     await this.removeOldDirectory(publication.sitePath);
+    if (publication.customDomain) {
+      const remaining = await this.publications.count({ where: { customDomain: publication.customDomain } });
+      if (remaining <= 1) await this.domainProvisioner.remove(publication.customDomain);
+    }
     await this.publications.remove(publication);
     await this.notifications.create(userId, { title: 'Página despublicada', message: `Sua página ${publication.pageName} saiu do ar.`, type: 'warning', action: 'projects' });
     await this.audit.record({ userId, type: 'warning', title: 'Página despublicada', message: `A página ${publication.pageName} foi despublicada.`, pageId: publication.pageId, pageName: publication.pageName });
@@ -137,6 +149,9 @@ export class PublicationService {
     publication.domainLastCheckedAt = new Date();
     publication.domainVerificationError = domainCheck.error;
     await this.publications.save(publication);
+    if (publication.domainStatus === 'active') {
+      await this.domainProvisioner.provision(publication.customDomain);
+    }
     await this.notifications.create(userId, {
       title: domainCheck.status === 'active' ? 'DNS validado' : 'DNS pendente',
       message: domainCheck.status === 'active' ? `O domínio da página ${publication.pageName} está ativo.` : `O DNS da página ${publication.pageName} ainda está pendente.`,
@@ -186,7 +201,9 @@ export class PublicationService {
       dns: publication.customDomain ? {
         type: 'CNAME',
         host: publication.customDomain,
-        value: dnsCnameTarget
+        value: dnsCnameTarget,
+        cname: dnsCnameTarget,
+        ips: publicServerIps
       } : null,
       publishedAt: publication.publishedAt,
       updatedAt: publication.updatedAt
@@ -223,7 +240,8 @@ export class PublicationService {
   }
 
   private withAnalyticsTracking(html: string, pageId: string, pageName: string) {
-    const popupContext = `<script data-popup-context>window.__builderPopupPageId=${JSON.stringify(pageId).replace(/</g, '\\u003c')};</script>`;
+    const signature = analyticsSignature(pageId);
+    const popupContext = `<script data-popup-context>window.__builderPopupPageId=${JSON.stringify(pageId).replace(/</g, '\\u003c')};window.__builderAnalyticsSignature=${JSON.stringify(signature)};</script>`;
     html = html.replace(/<script data-popup-context>[\s\S]*?<\/script>/g, '');
     html = html.replace(/<head[^>]*>/i, match => match + popupContext);
     const marker = 'data-builder-analytics="server"';
@@ -279,6 +297,7 @@ export class PublicationService {
       sessionId: sessionId,
       referrer: document.referrer || '',
       meta: meta || {}
+      ,signature: window.__builderAnalyticsSignature || ''
     });
     try {
       fetch('/api/analytics/events', {
@@ -414,18 +433,19 @@ export class PublicationService {
     }
   }
 
-  private async assertPublicationQuota(userId: string, updatingExisting: boolean, hasCustomDomain: boolean, previousDomain: string | null) {
+  private async assertPublicationQuota(userId: string, updatingExisting: boolean, customDomain: string | null, previousDomain: string | null) {
+    const planLimits = await this.billing.limits(userId);
     if (!updatingExisting) {
       const count = await this.publications.countBy({ userId });
-      if (count >= publicationLimits.maxPublicationsPerUser) {
+      if (count >= Math.min(publicationLimits.maxPublicationsPerUser, planLimits.maxPages)) {
         throw new BadRequestException('Limite de publicações atingido para este usuário.');
       }
     }
 
-    if (hasCustomDomain && !previousDomain) {
-      const domainCount = await this.publications.countBy({ userId });
+    if (customDomain && customDomain !== previousDomain) {
       const withDomain = await this.publications.find({ where: { userId } });
-      if (domainCount && withDomain.filter(item => Boolean(item.customDomain)).length >= publicationLimits.maxCustomDomainsPerUser) {
+      const domains = new Set(withDomain.map(item => item.customDomain).filter(Boolean));
+      if (!domains.has(customDomain) && domains.size >= Math.min(publicationLimits.maxCustomDomainsPerUser, planLimits.maxDomains)) {
         throw new BadRequestException('Limite de domínios customizados atingido para este usuário.');
       }
     }

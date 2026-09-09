@@ -1,0 +1,2 @@
+import { Column, CreateDateColumn, Entity, PrimaryGeneratedColumn } from 'typeorm';
+@Entity('email_verifications')export class EmailVerificationEntity{@PrimaryGeneratedColumn('uuid')id:string;@Column({type:'varchar',length:36})userId:string;@Column({type:'varchar',length:64,unique:true})tokenHash:string;@Column({type:'datetime'})expiresAt:Date;@Column({type:'datetime',nullable:true})usedAt?:Date|null;@CreateDateColumn()createdAt:Date;}

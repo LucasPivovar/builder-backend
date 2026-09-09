@@ -38,7 +38,7 @@ export class EmailTrackingController {
     if (!workspace.data.pages.some((page: any) => page.id === data.pageId)) throw new BadRequestException('Template não disponível.');
     const cookie = request.headers.cookie?.match(/(?:^|;\s*)ab_email_visitor=([a-f0-9-]{36})(?:;|$)/)?.[1] || randomUUID();
     response.cookie('ab_email_visitor', cookie, { httpOnly: true, sameSite: 'lax', secure: request.secure, maxAge: 365*86400000 });
-    await this.analytics.track({ pageId: data.pageId, type: 'email_click', target: data.label, value: 1, sessionId: cookie, meta: { href: data.url, buttonId: data.buttonId } }, request);
+    await this.analytics.track({ pageId: data.pageId, type: 'email_click', target: data.label, value: 1, sessionId: cookie, meta: { href: data.url, buttonId: data.buttonId } }, request, true);
     response.setHeader('Cache-Control', 'no-store');
     return response.redirect(302, data.url);
   }

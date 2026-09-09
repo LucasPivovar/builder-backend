@@ -10,9 +10,11 @@ import { WorkspaceModule } from '../workspace/workspace.module';
 import { AdminController } from './admin.controller';
 import { AdminGuard } from './admin.guard';
 import { AdminService } from './admin.service';
+import { SupportModule } from '../support/support.module';
+import { BillingModule } from '../billing/billing.module';
 
 @Module({
-  imports: [TypeOrmModule.forFeature([UserEntity, WorkspaceEntity, PublicationEntity]), AuthModule, WorkspaceModule, NotificationsModule, AuditModule],
+  imports: [TypeOrmModule.forFeature([UserEntity, WorkspaceEntity, PublicationEntity]), AuthModule, WorkspaceModule, NotificationsModule, AuditModule, SupportModule, BillingModule],
   controllers: [AdminController],
   providers: [AdminService, AdminGuard]
 })

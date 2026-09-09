@@ -9,9 +9,10 @@ import { AnalyticsController } from './analytics.controller';
 import { AnalyticsEventEntity } from './analytics-event.entity';
 import { AnalyticsService } from './analytics.service';
 import { EmailTrackingController } from './email-tracking.controller';
+import { WebhookDeliveryEntity } from './webhook-delivery.entity';
 
 @Module({
-  imports: [TypeOrmModule.forFeature([AnalyticsEventEntity, PublicationEntity, PopupSubmissionEntity, WorkspaceEntity]), WorkspaceModule],
+  imports: [TypeOrmModule.forFeature([AnalyticsEventEntity, PublicationEntity, PopupSubmissionEntity, WorkspaceEntity, WebhookDeliveryEntity]), WorkspaceModule],
   controllers: [AnalyticsController, EmailTrackingController],
   providers: [AnalyticsService, PopupSubmissionService],
   exports: [AnalyticsService]

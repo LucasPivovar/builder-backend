@@ -50,3 +50,21 @@ export class RegisterDto {
   @IsBoolean()
   remember?: boolean;
 }
+
+export class RequestPasswordResetDto {
+  @IsEmail() @MaxLength(255) email: string;
+}
+
+export class RequestEmailVerificationDto {
+  @IsEmail() @MaxLength(255) email: string;
+}
+
+export class ConfirmPasswordResetDto {
+  @IsString() @Length(32, 200) token: string;
+  @IsString() @Matches(/^(?=.*[a-z])(?=.*[A-Z])(?=.*\d).{8,72}$/, { message: 'A senha deve ter ao menos 8 caracteres, uma letra maiúscula, uma minúscula e um número.' }) password: string;
+}
+
+export class RefreshSessionDto {
+  @IsString() @Length(32, 200) refreshToken: string;
+}
+export class ConfirmEmailVerificationDto { @IsString() @Length(32,200) token:string; }

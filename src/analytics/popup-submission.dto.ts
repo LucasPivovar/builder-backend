@@ -6,6 +6,7 @@ class PopupFieldDto {
   @IsString() @MaxLength(2000) value: string;
 }
 export class PopupSubmissionDto {
+  @IsOptional() @IsString() @MaxLength(64) signature?: string;
   @IsOptional() @IsString() @MinLength(1) @MaxLength(80) visitorId?: string;
   @IsString() @MinLength(1) @MaxLength(120) pageId: string;
   @IsString() @MinLength(1) @MaxLength(120) popupId: string;

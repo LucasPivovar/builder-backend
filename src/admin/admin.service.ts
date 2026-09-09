@@ -7,6 +7,7 @@ import { AuditService } from '../audit/audit.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { WorkspaceEntity } from '../workspace/workspace.entity';
 import { WorkspaceService } from '../workspace/workspace.service';
+import { AuthService } from '../auth/auth.service';
 
 @Injectable()
 export class AdminService implements OnModuleInit {
@@ -15,17 +16,17 @@ export class AdminService implements OnModuleInit {
     @InjectRepository(WorkspaceEntity) private readonly workspaces: Repository<WorkspaceEntity>,
     @InjectRepository(PublicationEntity) private readonly publications: Repository<PublicationEntity>,
     private readonly workspaceService: WorkspaceService,
+    private readonly authService: AuthService,
     private readonly notifications: NotificationsService,
     private readonly audit: AuditService
   ) {}
 
   async onModuleInit() {
     if (await this.users.exists({ where: { role: 'admin' } })) return;
-    const [firstUser] = await this.users.find({ order: { createdAt: 'ASC' }, take: 1 });
-    if (firstUser) {
-      firstUser.role = 'admin';
-      await this.users.save(firstUser);
-    }
+    const configured=process.env.BOOTSTRAP_ADMIN_EMAIL?.trim().toLowerCase();
+    if(process.env.NODE_ENV==='production'&&!configured)return;
+    const firstUser=configured?await this.users.findOneBy({email:configured}):(await this.users.find({order:{createdAt:'ASC'},take:1}))[0];
+    if(firstUser){firstUser.role='admin';await this.users.save(firstUser);}
   }
 
   async overview() {
@@ -103,6 +104,22 @@ export class AdminService implements OnModuleInit {
     return users.map(user => this.userSummary(user, workspaces.find(item => item.userId === user.id)));
   }
 
+  async updateUserAccess(actorId: string, userId: string, input: { active?: boolean; role?: 'admin' | 'user' }) {
+    const user = await this.users.findOneBy({ id: userId });
+    if (!user) throw new NotFoundException('Usuário não encontrado.');
+    const removesAdmin = user.role === 'admin' && (input.role === 'user' || input.active === false);
+    if (removesAdmin) {
+      const activeAdmins = await this.users.count({ where: { role: 'admin', active: true } });
+      if (activeAdmins <= 1) throw new BadRequestException('A plataforma precisa manter pelo menos um administrador ativo.');
+    }
+    if (input.role) user.role = input.role;
+    if (input.active !== undefined) user.active = input.active;
+    await this.users.save(user);
+    if (input.active === false) await this.authService.revokeAllSessions(userId);
+    await this.audit.record({ userId, type: user.active ? 'info' : 'warning', title: 'Acesso de usuário alterado', message: `Administrador ${actorId} definiu papel ${user.role} e status ${user.active ? 'ativo' : 'inativo'}.`, meta: { actorId, role: user.role, active: user.active } });
+    return this.userSummary(user);
+  }
+
   async history() {
     return this.audit.list(160);
   }
@@ -148,13 +165,15 @@ export class AdminService implements OnModuleInit {
   async userWorkspace(userId: string) {
     const user = await this.users.findOneBy({ id: userId });
     if (!user) throw new NotFoundException('Usuário não encontrado.');
-    const [workspace, backups] = await Promise.all([
+    const [workspace, backups, sessions] = await Promise.all([
       this.workspaceService.getByUserId(userId),
-      this.workspaceService.listBackups(userId)
+      this.workspaceService.listBackups(userId),
+      this.authService.listSessions(userId)
     ]);
     return {
       user: this.userSummary(user),
       workspace,
+      sessions,
       backups: backups.map(item => ({
         id: item.id,
         revision: item.revision,
@@ -166,10 +185,21 @@ export class AdminService implements OnModuleInit {
     };
   }
 
+  async revokeUserSession(actorId: string, userId: string, sessionId: string) {
+    const result = await this.authService.revokeSession(userId, sessionId);
+    await this.audit.record({ userId, type: 'warning', title: 'Sessão revogada por administrador', message: `Administrador ${actorId} encerrou uma sessão da conta.`, meta: { actorId, sessionId } });
+    return result;
+  }
+
+  async revokeUserSessions(actorId: string, userId: string) {
+    const result = await this.authService.revokeAllSessions(userId);
+    await this.audit.record({ userId, type: 'warning', title: 'Sessões revogadas por administrador', message: `Administrador ${actorId} encerrou todas as sessões da conta.`, meta: { actorId, revoked: result.revoked } });
+    return result;
+  }
+
   async restore(userId: string, backupId: string) {
     const result = await this.workspaceService.restoreBackup(userId, backupId);
     if (!result) throw new NotFoundException('Backup não encontrado.');
-    await this.notifications.create(userId, { title: 'Backup restaurado', message: 'Um administrador restaurou um backup do seu workspace.', type: 'warning', action: 'projects' });
     return result;
   }
 

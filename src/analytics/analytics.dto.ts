@@ -9,4 +9,5 @@ export class TrackEventDto {
   @IsOptional() @IsString() @MaxLength(80) sessionId?: string;
   @IsOptional() @IsString() @MaxLength(120) referrer?: string;
   @IsOptional() @IsObject() meta?: Record<string, unknown>;
+  @IsOptional() @IsString() @MaxLength(64) signature?: string;
 }

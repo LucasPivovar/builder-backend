@@ -1,0 +1,1 @@
+import { IsIn } from 'class-validator'; export class RequestPlanDto { @IsIn(['pro','agency']) plan:'pro'|'agency'; } export class DecidePlanRequestDto { @IsIn(['approved','rejected']) status:'approved'|'rejected'; }

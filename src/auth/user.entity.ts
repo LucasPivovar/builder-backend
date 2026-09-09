@@ -24,6 +24,9 @@ export class UserEntity {
   @Column({ type: 'boolean', default: true })
   active: boolean;
 
+  @Column({ type:'datetime', nullable:true })
+  emailVerifiedAt?: Date|null;
+
   @CreateDateColumn()
   createdAt: Date;
 

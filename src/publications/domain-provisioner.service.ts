@@ -64,12 +64,15 @@ export class DomainProvisionerService {
 
   private async issueCertificate(primaryDomain: string, domains: string[]) {
     const liveCert = `/etc/letsencrypt/live/${primaryDomain}/fullchain.pem`;
-    if (await this.fileContains(liveCert, 'BEGIN CERTIFICATE')) return;
+    if (await this.certificateIsUsable(liveCert, domains)) return;
     const args = [
       'certonly',
       '--webroot',
       '-w',
       domainProvisioning.acmeWebroot,
+      '--cert-name',
+      primaryDomain,
+      '--expand',
       '--agree-tos',
       '--register-unsafely-without-email',
       '--non-interactive',
@@ -86,6 +89,33 @@ export class DomainProvisionerService {
   private async fileContains(path: string, text: string) {
     const content = await readFile(path, 'utf8').catch(() => '');
     return content.includes(text);
+  }
+
+  private async certificateIsUsable(path: string, domains: string[]) {
+    if (!await this.fileContains(path, 'BEGIN CERTIFICATE')) return false;
+    const names = await this.certificateNames(path);
+    if (!domains.every(domain => names.has(domain))) return false;
+    const expiresAt = await this.certificateExpiresAt(path);
+    if (!expiresAt) return false;
+    const minimumValidityMs = 14 * 24 * 60 * 60 * 1000;
+    return expiresAt.getTime() - Date.now() > minimumValidityMs;
+  }
+
+  private async certificateNames(path: string) {
+    const { stdout } = await execFileAsync('openssl', ['x509', '-in', path, '-noout', '-ext', 'subjectAltName'], { timeout: 30_000, maxBuffer: 1024 * 1024 }).catch(() => ({ stdout: '' }));
+    return new Set(
+      stdout
+        .split(/[,\n]/)
+        .map(part => part.trim().replace(/^DNS:/, '').toLowerCase())
+        .filter(name => this.normalize(name))
+    );
+  }
+
+  private async certificateExpiresAt(path: string) {
+    const { stdout } = await execFileAsync('openssl', ['x509', '-in', path, '-noout', '-enddate'], { timeout: 30_000, maxBuffer: 1024 * 1024 }).catch(() => ({ stdout: '' }));
+    const value = stdout.trim().replace(/^notAfter=/, '');
+    const timestamp = Date.parse(value);
+    return Number.isFinite(timestamp) ? new Date(timestamp) : null;
   }
 
   private confPath(domain: string) {

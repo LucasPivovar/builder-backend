@@ -73,13 +73,23 @@ export class WorkspaceService implements OnModuleInit {
 
   async save(userId: string, dto: SaveWorkspaceDto) {
     this.assertWorkspaceStructure(dto);
-    const limits = await this.billing.limits(userId);
-    if (dto.pages.length > limits.maxPages) {
-      throw new ConflictException(`Seu plano permite no máximo ${limits.maxPages} páginas.`);
-    }
     let workspace = await this.workspaces.findOneBy({ userId });
     if (!workspace) {
       workspace = this.workspaces.create({ userId, data: this.defaultData(), revision: 0 });
+    }
+
+    // O limite do plano barra apenas o crescimento acima do teto. Quem já está no limite
+    // continua editando e removendo páginas; caso contrário um workspace cheio ficaria
+    // impossível de salvar por completo.
+    const limits = await this.billing.limits(userId);
+    const storedPages = Array.isArray(workspace.data?.pages) ? workspace.data.pages.length : 0;
+    if (dto.pages.length > limits.maxPages && dto.pages.length > storedPages) {
+      throw new ConflictException({
+        message: `Seu plano permite no máximo ${limits.maxPages} páginas.`,
+        code: 'PLAN_PAGE_LIMIT',
+        maxPages: limits.maxPages,
+        currentPages: storedPages
+      });
     }
 
     if (dto.revision !== undefined && dto.revision !== workspace.revision) {

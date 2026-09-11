@@ -14,10 +14,18 @@ export function encryptPrivateData(value: unknown): string {
 export const privateDataTransformer = {
   to: encryptPrivateData,
   from(value: string) {
-    if (!value.startsWith('enc:v1:')) return JSON.parse(value);
-    const bytes = Buffer.from(value.slice(7), 'base64');
-    const decipher = createDecipheriv('aes-256-gcm', key, bytes.subarray(0,12));
-    decipher.setAuthTag(bytes.subarray(12,28));
-    return JSON.parse(Buffer.concat([decipher.update(bytes.subarray(28)), decipher.final()]).toString('utf8'));
+    if (value === null || value === undefined) return null;
+    try {
+      if (!value.startsWith('enc:v1:')) return JSON.parse(value);
+      const bytes = Buffer.from(value.slice(7), 'base64');
+      const decipher = createDecipheriv('aes-256-gcm', key, bytes.subarray(0,12));
+      decipher.setAuthTag(bytes.subarray(12,28));
+      return JSON.parse(Buffer.concat([decipher.update(bytes.subarray(28)), decipher.final()]).toString('utf8'));
+    } catch (error) {
+      // Registro gravado com outra chave (ou corrompido): devolve null em vez de
+      // derrubar a consulta inteira. Quem consome trata o null explicitamente.
+      console.error('[private-data] registro ilegivel com a chave atual:', (error as Error).message);
+      return null;
+    }
   }
 };

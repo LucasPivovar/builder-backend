@@ -12,6 +12,11 @@ import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 const publishedCsp = "default-src 'self'; script-src 'self' 'unsafe-inline' https:; style-src 'self' 'unsafe-inline' https:; img-src 'self' data: blob: https:; media-src 'self' blob: https:; frame-src https:; connect-src 'self' https:; font-src 'self' data: https:; object-src 'none'; base-uri 'self'; form-action 'self' https:; frame-ancestors 'self'";
 function setPublishedHeaders(response: Response){response.setHeader('Content-Security-Policy',publishedCsp);response.setHeader('Referrer-Policy','strict-origin-when-cross-origin');response.setHeader('Permissions-Policy','camera=(), microphone=(), geolocation=()');response.setHeader('X-Content-Type-Options','nosniff');}
 
+function isReservedPath(pathname: string) {
+  return pathname === '/api' || pathname.startsWith('/api/')
+    || pathname === '/p' || pathname.startsWith('/p/');
+}
+
 async function bootstrap() {
   const app = await NestFactory.create(AppModule, { cors: false, bodyParser: false });
   const publicationService = app.get(PublicationService);
@@ -20,7 +25,7 @@ async function bootstrap() {
 
   app.use(async (request: Request, response: Response, next: NextFunction) => {
     if (request.method !== 'GET' && request.method !== 'HEAD') return next();
-    if (request.path.startsWith('/api') || request.path.startsWith('/p')) return next();
+    if (isReservedPath(request.path)) return next();
     if (['127.0.0.1', 'localhost'].includes(request.hostname)) return next();
 
     const publication = await publicationService.findByDomain(request.hostname, request.path);
@@ -74,7 +79,9 @@ async function bootstrap() {
     SwaggerModule.setup('api/docs', app, SwaggerModule.createDocument(app, config), { jsonDocumentUrl:'api/docs/openapi.json' });
   }
   app.getHttpAdapter().getInstance().set('json spaces', 0);
-  await publicationService.ensureTrackingForAllPublications();
+  await publicationService.ensureTrackingForAllPublications().catch((error) => {
+    console.error('[bootstrap] falha ao preparar o rastreamento das publicacoes:', error?.message || error);
+  });
   await app.listen(Number(process.env.PORT || 3000), process.env.HOST || '127.0.0.1');
 }
 

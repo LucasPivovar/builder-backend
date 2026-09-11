@@ -32,8 +32,8 @@ export class PublicationService {
     const pageId = this.cleanSegment(dto.pageId, 'pagina');
     let publication = await this.publications.findOneBy({ userId, pageId });
     const workspace = await this.workspaces.findOneBy({ userId });
-    const page: any = workspace?.data.pages.find((page: any) => page.id === dto.pageId);
-    const folder: any = workspace?.data.folders.find((folder: any) => folder.id === page?.folderId);
+    const page: any = workspace?.data?.pages?.find((page: any) => page.id === dto.pageId);
+    const folder: any = workspace?.data?.folders?.find((folder: any) => folder.id === page?.folderId);
     const slug = this.cleanSegment(dto.slug || page?.pageSettings?.publicationSlug || publication?.slug || dto.pageName, 'pagina');
     const userPrefix = this.cleanSegment(userId.slice(0, 8), 'user');
     const siteKey = publication?.siteKey || await this.uniqueSiteKey(`${userPrefix}-${slug}`, userId, pageId);
@@ -115,11 +115,15 @@ export class PublicationService {
   async ensureTrackingForAllPublications() {
     const rows = await this.publications.find();
     await Promise.all(rows.map(async (publication) => {
-      const indexPath = this.resolvePublishedFile(publication.sitePath, 'index.html');
-      const html = await readFile(indexPath, 'utf8').catch(() => '');
-      if (!html) return;
-      const trackedHtml = this.withAnalyticsTracking(html, publication.pageId, publication.pageName);
-      if (trackedHtml !== html) await writeFile(indexPath, trackedHtml, 'utf8');
+      try {
+        const indexPath = this.resolvePublishedFile(publication.sitePath, 'index.html');
+        const html = await readFile(indexPath, 'utf8').catch(() => '');
+        if (!html) return;
+        const trackedHtml = this.withAnalyticsTracking(html, publication.pageId, publication.pageName);
+        if (trackedHtml !== html) await writeFile(indexPath, trackedHtml, 'utf8');
+      } catch (error) {
+        console.error(`[publications] rastreamento ignorado para ${publication.id} (${publication.sitePath}): ${(error as Error).message}`);
+      }
     }));
   }
 

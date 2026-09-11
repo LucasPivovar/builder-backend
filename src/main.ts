@@ -79,7 +79,9 @@ async function bootstrap() {
     SwaggerModule.setup('api/docs', app, SwaggerModule.createDocument(app, config), { jsonDocumentUrl:'api/docs/openapi.json' });
   }
   app.getHttpAdapter().getInstance().set('json spaces', 0);
-  await publicationService.ensureTrackingForAllPublications();
+  await publicationService.ensureTrackingForAllPublications().catch((error) => {
+    console.error('[bootstrap] falha ao preparar o rastreamento das publicacoes:', error?.message || error);
+  });
   await app.listen(Number(process.env.PORT || 3000), process.env.HOST || '127.0.0.1');
 }
 

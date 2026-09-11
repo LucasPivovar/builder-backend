@@ -1,4 +1,4 @@
-import { BadRequestException, ConflictException, Injectable, OnModuleInit } from '@nestjs/common';
+import { BadRequestException, ConflictException, Injectable, OnModuleInit, ServiceUnavailableException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { AuditService } from '../audit/audit.service';
@@ -26,10 +26,25 @@ export class WorkspaceService implements OnModuleInit {
 
   async onModuleInit() {
     // Regrava também os registros legados através do transformador criptografado.
-    const workspaces = await this.workspaces.find();
-    const backups = await this.backups.find();
-    for (const workspace of workspaces) await this.workspaces.update(workspace.id, { data: workspace.data as any });
-    for (const backup of backups) await this.backups.update(backup.id, { data: backup.data as any });
+    // Registros ilegíveis são apenas relatados: a inicialização nunca pode falhar por causa deles.
+    try {
+      const workspaces = await this.workspaces.find();
+      const backups = await this.backups.find();
+      const unreadable: string[] = [];
+      for (const workspace of workspaces) {
+        if (workspace.data == null) { unreadable.push(`workspace ${workspace.id}`); continue; }
+        await this.workspaces.update(workspace.id, { data: workspace.data as any });
+      }
+      for (const backup of backups) {
+        if (backup.data == null) { unreadable.push(`backup ${backup.id}`); continue; }
+        await this.backups.update(backup.id, { data: backup.data as any });
+      }
+      if (unreadable.length) {
+        console.error(`[workspace] ${unreadable.length} registro(s) ilegível(is) preservado(s) sem regravação: ${unreadable.join(', ')}`);
+      }
+    } catch (error) {
+      console.error('[workspace] falha ao regravar registros legados:', (error as Error).message);
+    }
   }
 
   async get(userId: string) {
@@ -42,6 +57,9 @@ export class WorkspaceService implements OnModuleInit {
         revision: 0
       });
       await this.workspaces.save(workspace);
+    }
+    if (workspace.data == null) {
+      throw new ServiceUnavailableException('Não foi possível ler seu workspace no servidor. Nenhum dado foi alterado — contate o suporte.');
     }
     if (workspace.data.folders.some((folder: any) => folder.id === 'folder-default' && folder.name === 'Funil Principal')) {
       workspace.data.folders = workspace.data.folders.filter((folder: any) => folder.id !== 'folder-default');
@@ -71,7 +89,7 @@ export class WorkspaceService implements OnModuleInit {
       });
     }
 
-    if (workspace.initialized) {
+    if (workspace.initialized && workspace.data != null) {
       await this.createBackup(workspace, 'Antes do salvamento');
     }
     workspace.data = this.sanitize({
@@ -163,7 +181,8 @@ export class WorkspaceService implements OnModuleInit {
     if (!backup) return null;
     let workspace = await this.workspaces.findOneBy({ userId });
     if (!workspace) workspace = this.workspaces.create({ userId, data: this.defaultData(), revision: 0 });
-    if (workspace.initialized) await this.createBackup(workspace, backupReason);
+    if (backup.data == null) throw new ConflictException('Este backup não pôde ser lido e não pode ser restaurado.');
+    if (workspace.initialized && workspace.data != null) await this.createBackup(workspace, backupReason);
     workspace.data = this.sanitize(backup.data);
     workspace.initialized = true;
     workspace.revision += 1;

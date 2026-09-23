@@ -7,7 +7,6 @@ export class SaveWorkspaceDto {
   revision?: number;
 
   @IsArray()
-  @ArrayMaxSize(1000)
   pages: unknown[];
 
   @IsArray()

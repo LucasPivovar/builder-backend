@@ -82,8 +82,11 @@ export class WorkspaceService implements OnModuleInit {
     // continua editando e removendo páginas; caso contrário um workspace cheio ficaria
     // impossível de salvar por completo.
     const limits = await this.billing.limits(userId);
+    if (limits.maxPages !== null && dto.pages.length > 1000) {
+      throw new BadRequestException('Workspace excede o limite de 1000 páginas.');
+    }
     const storedPages = Array.isArray(workspace.data?.pages) ? workspace.data.pages.length : 0;
-    if (dto.pages.length > limits.maxPages && dto.pages.length > storedPages) {
+    if (limits.maxPages !== null && dto.pages.length > limits.maxPages && dto.pages.length > storedPages) {
       throw new ConflictException({
         message: `Seu plano permite no máximo ${limits.maxPages} páginas.`,
         code: 'PLAN_PAGE_LIMIT',

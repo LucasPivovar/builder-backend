@@ -439,7 +439,7 @@ export class PublicationService {
 
   private async assertPublicationQuota(userId: string, updatingExisting: boolean, customDomain: string | null, previousDomain: string | null) {
     const planLimits = await this.billing.limits(userId);
-    if (!updatingExisting) {
+    if (!updatingExisting && planLimits.maxPages !== null) {
       const count = await this.publications.countBy({ userId });
       if (count >= Math.min(publicationLimits.maxPublicationsPerUser, planLimits.maxPages)) {
         throw new BadRequestException('Limite de publicações atingido para este usuário.');

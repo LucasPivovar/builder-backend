@@ -233,7 +233,8 @@ try {
   assert.deepEqual(catalog.data.map(plan => plan.id), ['essential', 'pro', 'agency']);
   const initialSubscription = await request('/billing/subscription', { token });
   assert.equal(initialSubscription.data.plan, 'essential');
-  assert.equal(initialSubscription.data.limits.maxPages, 5);
+  assert.equal(initialSubscription.data.limits.maxPages, null);
+  assert.equal(catalog.data[0].maxPages, 5, 'A isenção não altera o catálogo de planos');
 
   const savedWorkspace = await request('/workspace', {
     method: 'PUT',
@@ -446,6 +447,7 @@ try {
   const secondInitialLogin = await request('/auth/login', { method:'POST', body:{ email:`isolado-${suffix}@local.test`, password } });
   assert.equal(secondInitialLogin.response.status, 200);
   const secondInitialToken = secondInitialLogin.data.accessToken;
+  assert.equal((await request('/billing/subscription', { token: secondInitialToken })).data.limits.maxPages, 5);
   const isolated = await request('/workspace', { token: secondInitialToken });
   assert.equal(isolated.data.data.pages.length, 0);
   const tooManyPages = await request('/workspace', {
@@ -453,6 +455,29 @@ try {
     body: { revision: isolated.data.revision, pages: Array.from({ length: 6 }, (_, index) => ({ id: `limited-${index}`, name: `Página ${index}`, rows: [] })), folders: [], templates: [], versions: [], metrics: [], settings: {} }
   });
   assert.equal(tooManyPages.response.status, 409);
+  const promote = await request(`/admin/users/${secondInitialLogin.data.user.id}/access`, {
+    method: 'PATCH', token: login.data.accessToken, body: { role: 'admin' }
+  });
+  assert.equal(promote.response.status, 200);
+  assert.equal((await request('/billing/subscription', { token: secondInitialToken })).data.limits.maxPages, null);
+  const unlimitedWorkspace = await request('/workspace', {
+    method: 'PUT', token: secondInitialToken,
+    body: { ...isolated.data.data, revision: isolated.data.revision,
+      pages: Array.from({ length: 1001 }, (_, index) => ({ id: `admin-${index}`, name: `Página ${index}`, rows: [] })) }
+  });
+  assert.equal(unlimitedWorkspace.response.status, 200, JSON.stringify(unlimitedWorkspace.data));
+  assert.equal(unlimitedWorkspace.data.data.pages.length, 1001);
+  const clearedWorkspace = await request('/workspace', {
+    method: 'PUT', token: secondInitialToken,
+    body: { ...isolated.data.data, revision: unlimitedWorkspace.data.revision }
+  });
+  assert.equal(clearedWorkspace.response.status, 200);
+  isolated.data.revision = clearedWorkspace.data.revision;
+  const demote = await request(`/admin/users/${secondInitialLogin.data.user.id}/access`, {
+    method: 'PATCH', token: login.data.accessToken, body: { role: 'user' }
+  });
+  assert.equal(demote.response.status, 200);
+  assert.equal((await request('/billing/subscription', { token: secondInitialToken })).data.limits.maxPages, 5);
   const planRequest = await request('/billing/checkout', { method: 'POST', token: secondInitialToken, body: { plan: 'pro' } });
   assert.equal(planRequest.response.status, 201);
   assert.equal(planRequest.data.request.status, 'pending');

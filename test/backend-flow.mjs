@@ -255,11 +255,20 @@ try {
   });
   assert.equal(savedWorkspace.response.status, 200);
   assert.equal(savedWorkspace.data.initialized, true);
+  const otherDeviceLogin = await request('/auth/login', {
+    method: 'POST', body: { email: `persist-${suffix}@local.test`, password }
+  });
+  assert.equal(otherDeviceLogin.response.status, 200);
+  const otherDeviceWorkspace = await request('/workspace', { token: otherDeviceLogin.data.accessToken });
+  assert.equal(otherDeviceWorkspace.response.status, 200);
+  assert.deepEqual(otherDeviceWorkspace.data.data.pages, savedWorkspace.data.data.pages, 'Outro dispositivo deve receber as mesmas páginas da conta');
   const changedWorkspace = await request('/workspace', {
     method: 'PUT', token,
     body: { ...savedWorkspace.data.data, revision: savedWorkspace.data.revision, pages: savedWorkspace.data.data.pages.map((page, index) => index === 0 ? { ...page, name: 'Página alterada' } : page) }
   });
   assert.equal(changedWorkspace.response.status, 200);
+  const otherDeviceUpdated = await request('/workspace', { token: otherDeviceLogin.data.accessToken });
+  assert.equal(otherDeviceUpdated.data.data.pages[0].name, 'Página alterada');
   const ownBackups = await request('/workspace/backups', { token });
   assert.equal(ownBackups.response.status, 200);
   assert.ok(ownBackups.data.length >= 1);
